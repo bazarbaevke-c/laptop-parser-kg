@@ -1,0 +1,7 @@
+*.pyc
+__pycache__/
+*.session
+*.session-journal
+laptops_data.xlsx
+.env
+*.env
