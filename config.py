@@ -13,7 +13,9 @@ REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID", "")  # ваш chat_id или гру
 # === КАНАЛЫ ДЛЯ ПАРСИНГА ===
 TG_CHANNELS = [
     "computer_sales_in_kyrgyzstan",
-    -1001234567890,  # замените на реальный ID приватного канала compshop_kg
+    # compshop_kg — приватный канал, нужен реальный ID (см. инструкцию ниже)
+    # Чтобы узнать ID: перешлите любое сообщение из канала боту @userinfobot
+    # Затем добавьте: -100XXXXXXXXXX  (с префиксом -100)
 ]
 
 # === САЙТЫ ===
