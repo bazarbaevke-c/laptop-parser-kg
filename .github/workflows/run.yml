@@ -8,7 +8,7 @@ on:
 jobs:
   parse:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -21,6 +21,9 @@ jobs:
 
       - name: Установка зависимостей
         run: pip install -r requirements.txt
+
+      - name: Установка браузера Playwright
+        run: playwright install chromium --with-deps
 
       - name: Запуск агента
         env:
