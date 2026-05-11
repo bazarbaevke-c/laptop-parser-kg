@@ -31,7 +31,6 @@ def parse_lalafo() -> list[dict]:
             },
         )
 
-        # Скрываем следы автоматизации
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
@@ -41,60 +40,84 @@ def parse_lalafo() -> list[dict]:
 
         page = context.new_page()
 
-        for page_num in range(1, 6):
+        for page_num in range(1, 4):
             url = "https://lalafo.kg/kyrgyzstan/noutbuki"
             if page_num > 1:
                 url += f"?page={page_num}"
 
             try:
-                page.goto(url, wait_until="networkidle", timeout=45000)
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                # Ждём рендеринга JS
+                page.wait_for_timeout(8000)
             except Exception as e:
                 print(f"[Lalafo] Страница {page_num} goto: {e}")
-                # Пробуем продолжить — иногда networkidle не достигается, но контент есть
-                try:
-                    page.wait_for_timeout(3000)
-                except Exception:
-                    break
+                break
 
-            # Пробуем найти объявления несколькими способами
             html = page.content()
             print(f"[Lalafo] Страница {page_num}: HTML размер {len(html)} байт")
+            # Логируем фрагмент для диагностики URL-паттернов
+            snippet = html[2000:3500] if len(html) > 3500 else html
+            snippet_clean = snippet.replace("\n", " ")[:800]
+            print(f"[Lalafo] HTML snippet: {snippet_clean}")
 
-            # Ищем ссылки на объявления
-            cards = page.query_selector_all("a[href*='/kyrgyzstan/noutbuki/']")
-            print(f"[Lalafo] Страница {page_num}: найдено ссылок = {len(cards)}")
+            # Все ссылки на странице
+            all_links = page.query_selector_all("a[href]")
+            lalafo_links = []
+            for a in all_links:
+                href = a.get_attribute("href") or ""
+                if "noutbuki" in href or "notebook" in href.lower():
+                    lalafo_links.append(href)
 
-            if not cards:
-                # Пробуем другие селекторы
-                cards = page.query_selector_all("a[href*='lalafo.kg/kyrgyzstan/noutbuki/']")
+            print(f"[Lalafo] Страница {page_num}: ссылок с 'noutbuki' = {len(lalafo_links)}")
 
-            if not cards:
-                # Парсим HTML через регулярки как запасной вариант
-                hrefs = re.findall(r'href="(/kyrgyzstan/noutbuki/[^"]+)"', html)
-                hrefs += re.findall(r'href="(https://lalafo\.kg/kyrgyzstan/noutbuki/[^"]+)"', html)
-                unique_hrefs = list(dict.fromkeys(hrefs))
-                print(f"[Lalafo] Страница {page_num}: regex нашёл {len(unique_hrefs)} href")
+            # Все href через regex
+            all_hrefs = re.findall(r'href=["\']([^"\']+)["\']', html)
+            noutbuki_hrefs = [h for h in all_hrefs if "noutbuki" in h or "notebook" in h.lower()]
+            print(f"[Lalafo] Страница {page_num}: regex href с 'noutbuki' = {len(noutbuki_hrefs)}")
+            if noutbuki_hrefs:
+                print(f"[Lalafo] Примеры: {noutbuki_hrefs[:3]}")
 
+            # Пробуем широкие CSS-селекторы
+            card_selectors = [
+                "a[href*='/kyrgyzstan/noutbuki/']",
+                "a[href*='/noutbuki/']",
+                "a[href*='lalafo.kg']",
+                "article a",
+                ".listing-item a",
+                "[class*='item'] a",
+                "[class*='card'] a",
+                "[class*='feed'] a",
+            ]
+
+            cards = []
+            for sel in card_selectors:
+                found = page.query_selector_all(sel)
+                if found:
+                    print(f"[Lalafo] Селектор '{sel}' нашёл {len(found)} элементов")
+                    cards = found
+                    break
+
+            if not cards and noutbuki_hrefs:
+                # Используем regex-найденные ссылки
+                unique_hrefs = list(dict.fromkeys(noutbuki_hrefs))
                 for href in unique_hrefs[:30]:
                     link = href if href.startswith("http") else f"https://lalafo.kg{href}"
+                    slug = href.split("/")[-1].replace("-", " ").strip()
                     results.append({
                         "source": "Lalafo.kg",
-                        "title": link.split("/")[-1].replace("-", " ")[:80],
+                        "title": slug[:80] if slug else link[:80],
                         "price": "—",
                         "location": "—",
                         "link": link,
                         "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     })
-
-                if not unique_hrefs:
-                    break
                 continue
 
-            page_results_count = 0
+            page_count = 0
             for card in cards:
                 try:
                     href = card.get_attribute("href") or ""
-                    if not href:
+                    if not href or ("noutbuki" not in href and "notebook" not in href.lower()):
                         continue
                     link = href if href.startswith("http") else f"https://lalafo.kg{href}"
 
@@ -104,13 +127,11 @@ def parse_lalafo() -> list[dict]:
 
                     title = title_el.inner_text().strip() if title_el else card.inner_text()[:60].strip()
                     title = re.sub(r"\s+", " ", title)
-
                     price = price_el.inner_text().strip() if price_el else "—"
                     price = re.sub(r"\s+", " ", price)
-
                     location = location_el.inner_text().strip() if location_el else "—"
 
-                    if not title or title == "—":
+                    if not title:
                         continue
 
                     results.append({
@@ -121,16 +142,15 @@ def parse_lalafo() -> list[dict]:
                         "link": link,
                         "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     })
-                    page_results_count += 1
+                    page_count += 1
                 except Exception:
                     continue
 
-            if page_results_count == 0:
+            if page_count == 0 and not noutbuki_hrefs:
                 break
 
         browser.close()
 
-    # Дедуплицируем по ссылке
     seen = set()
     unique = []
     for item in results:
