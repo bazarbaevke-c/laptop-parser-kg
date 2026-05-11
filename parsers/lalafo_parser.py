@@ -8,7 +8,16 @@ def parse_lalafo() -> list[dict]:
     results = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -17,7 +26,19 @@ def parse_lalafo() -> list[dict]:
             ),
             locale="ru-RU",
             viewport={"width": 1280, "height": 800},
+            extra_http_headers={
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
         )
+
+        # Скрываем следы автоматизации
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
+
         page = context.new_page()
 
         for page_num in range(1, 6):
@@ -26,25 +47,48 @@ def parse_lalafo() -> list[dict]:
                 url += f"?page={page_num}"
 
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                # Ждём появления карточек
-                page.wait_for_selector(
-                    "article, .feed-item, [class*='listing'], a[href*='/noutbuki/']",
-                    timeout=15000,
-                )
+                page.goto(url, wait_until="networkidle", timeout=45000)
             except Exception as e:
-                print(f"[Lalafo] Страница {page_num}: {e}")
-                break
+                print(f"[Lalafo] Страница {page_num} goto: {e}")
+                # Пробуем продолжить — иногда networkidle не достигается, но контент есть
+                try:
+                    page.wait_for_timeout(3000)
+                except Exception:
+                    break
 
-            # Перехватываем все ссылки на объявления
+            # Пробуем найти объявления несколькими способами
+            html = page.content()
+            print(f"[Lalafo] Страница {page_num}: HTML размер {len(html)} байт")
+
+            # Ищем ссылки на объявления
             cards = page.query_selector_all("a[href*='/kyrgyzstan/noutbuki/']")
+            print(f"[Lalafo] Страница {page_num}: найдено ссылок = {len(cards)}")
 
             if not cards:
-                # Попробуем общие карточки
-                cards = page.query_selector_all("article, li.listing-item, div.feed-item")
+                # Пробуем другие селекторы
+                cards = page.query_selector_all("a[href*='lalafo.kg/kyrgyzstan/noutbuki/']")
 
             if not cards:
-                break
+                # Парсим HTML через регулярки как запасной вариант
+                hrefs = re.findall(r'href="(/kyrgyzstan/noutbuki/[^"]+)"', html)
+                hrefs += re.findall(r'href="(https://lalafo\.kg/kyrgyzstan/noutbuki/[^"]+)"', html)
+                unique_hrefs = list(dict.fromkeys(hrefs))
+                print(f"[Lalafo] Страница {page_num}: regex нашёл {len(unique_hrefs)} href")
+
+                for href in unique_hrefs[:30]:
+                    link = href if href.startswith("http") else f"https://lalafo.kg{href}"
+                    results.append({
+                        "source": "Lalafo.kg",
+                        "title": link.split("/")[-1].replace("-", " ")[:80],
+                        "price": "—",
+                        "location": "—",
+                        "link": link,
+                        "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    })
+
+                if not unique_hrefs:
+                    break
+                continue
 
             page_results_count = 0
             for card in cards:
@@ -54,10 +98,9 @@ def parse_lalafo() -> list[dict]:
                         continue
                     link = href if href.startswith("http") else f"https://lalafo.kg{href}"
 
-                    # Пробуем взять текст из карточки
-                    title_el = card.query_selector("h3, h2, [class*='title'], [class*='name']")
-                    price_el = card.query_selector("[class*='price']")
-                    location_el = card.query_selector("[class*='location'], [class*='city']")
+                    title_el = card.query_selector("h3, h2, [class*='title'], [class*='name'], [class*='Title']")
+                    price_el = card.query_selector("[class*='price'], [class*='Price']")
+                    location_el = card.query_selector("[class*='location'], [class*='city'], [class*='Location']")
 
                     title = title_el.inner_text().strip() if title_el else card.inner_text()[:60].strip()
                     title = re.sub(r"\s+", " ", title)
